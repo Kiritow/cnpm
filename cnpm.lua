@@ -5,14 +5,14 @@ local component=require("component")
 local shell=require("shell")
 local serialization=require("serialization")
 
-local function cmd(cmdstr,infostr)
+local function showcmd(cmdstr,infostr)
     local old=component.gpu.setForeground(0xFFFF00)
     io.write(cmdstr)
     component.gpu.setForeground(0xFFFFFF)
     print("  " .. infostr)
     component.gpu.setForeground(old)
 end
-local function err(info)
+local function showerr(infostr)
     local old=component.gpu.setForeground(0xFF0000)
     print(infostr)
     component.gpu.setForeground(old)
@@ -22,32 +22,42 @@ local args,ops=shell.parse(...)
 local argc=#args
 if(argc<1) then
     print("Usage:")
-    cmd("cnpm install <package>","Install package")
-    cmd("cnpm add [-gbmkno,--url=<url>] <repo>",
-    "Add an external repository to cnpm\n" ..
-    "-g Github repository (default)\n" ..
-    "-b Bitnami repository\n" ..
-    "-m Gitee repository\n" ..
-    "-k CNPM official repository\n" ..
-    "-n CodingNet repository\n" ..
-    "-o Register as oppm repository\n" ..
-    "--url=<url> Direct repository link\n"
+    showcmd("cnpm install <package>","Install package")
+    showcmd("cnpm add [-gbmkno,--url=<url>] <repo>",
+        "Add an external repository to cnpm\n" ..
+        "\t-g Github repository (default)\n" ..
+        "\t-b Bitnami repository\n" ..
+        "\t-m Gitee repository\n" ..
+        "\t-k CNPM official repository\n" ..
+        "\t-n CodingNet repository\n" ..
+        "\t-o Register as oppm repository\n" ..
+        "\t--url=<url> Direct repository link\n"
     )
-    cmd("cnpm del <repo>","Delete an external repository")
-    cmd("cnpm update","Update software info")
-    cmd("cnpm upgrade [<package>]","Upgrade packages")
-    cmd("cnpm remove <package>","Remove package")
-    return
+    showcmd("cnpm del <repo>","Delete an external repository")
+    showcmd("cnpm update","Update software info")
+    showcmd("cnpm upgrade [<package>]","Upgrade packages")
+    showcmd("cnpm remove <package>","Remove package")
+    return 0
 end
 
 -- Hardware check
 local network=component.internet
 if(network==nil) then 
-    err("No network device found.") 
+    showerr("No network device found.") 
 end
 
 local function getdb()
     local f=io.open("/etc/cnpm/packages.cache","r")
+    if(f==nil) then
+        -- Try create on first time failure
+        local ff,err=io.open("/etc/cnpm/packages.cache","w")
+        if(ff==nil) then
+            error("Failed to read packages cache file: " .. err)
+        else
+            ff:close()
+            return {}
+        end
+    end
     local content=f:read("*all")
     f:close()
     return serialization.unserialize(content)
@@ -63,6 +73,7 @@ end
 if(args[1]=="add") then
     local restb=dofile("urlresolver.lua")
     
+    print("Initializing...")
     local git=false
     local oppm=false
     local resolver
@@ -89,8 +100,8 @@ if(args[1]=="add") then
     elseif(ops.url) then
         url=ops.url
     else
-        err("Cannot resolve repository url.")
-        return
+        showerr("Cannot resolve repository url.")
+        return 1
     end
     
     if(oppm) then 
@@ -100,6 +111,7 @@ if(args[1]=="add") then
     
     local realcfgurl=""
     
+    print("Resolving url...")
     if(git) then
         realcfgurl=resolver(args[2],"mainfest.txt")
     else
@@ -109,6 +121,7 @@ if(args[1]=="add") then
         realcfgurl=url .. "mainfest.txt"   
     end
     
+    print("Downloading mainfest...")
     local hand=network.request(realcfgurl)
     local res=""
     while true do
@@ -119,12 +132,15 @@ if(args[1]=="add") then
     end
     hand.close()
     
-    local fn=load(res,"Mainfest","t",{})
-    local err,mft=pcall(fn)
-    if(not err) then
-        err("Failed to load mainfest.")
-        return
+    print("Reading mainfest...")
+    local fn=load("return " .. res,"Mainfest","t",{})
+    local isok,err=pcall(fn)
+    if(not isok) then
+        showerr("Failed to load mainfest: " .. err)
+        return 2
     end
+
+    local mft=err -- If nothing wrong happend, then the second value should be mft(Mainfest Table)
     
     local function checkval(param,tp)
         if(tp==nil) then tp="string" end
@@ -134,11 +150,12 @@ if(args[1]=="add") then
         for k,v in pairs(tp) do
             if(type(param)==v) then return param end
         end
-        error("invalid param type")
+        error("Invalid param type")
     end
     
+    print("Checking mainfest...")
     local pkg={}
-    local ret=pcall(
+    local ret,err=pcall(
         function()
             -- Copy info
             pkg.name=checkval(mft.name)
@@ -169,6 +186,26 @@ if(args[1]=="add") then
     )
     
     if(ret==false) then
-        err("Invalid package mainfest.")
+        showerr("Invalid package mainfest: " .. err)
+        return 3
     end
+
+    print("Adding package info...")
+    local db=getdb()
+    if(db[pkg.name]==nil) then -- New package with this name
+        db[pkg.name]={}
+    end
+
+    local spkg={}
+    spkg.pkg=pkg
+    spkg.site=string.gsub(realcfgurl,"/mainfest.txt","/")
+    spkg.cert=false -- Repo add through "cnpm add <repo>" are not certified.
+
+    -- Add repo
+    print("Updating package info...")
+    table.insert(db[pkg.name],spkg)
+    
+    savedb(db)
+
+    print("Repository Added.")
 end
