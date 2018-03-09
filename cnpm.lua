@@ -4,6 +4,7 @@ print("Author: Github/Kiritow")
 local component=require("component")
 local shell=require("shell")
 local serialization=require("serialization")
+local uuid=require("uuid")
 
 local function showcmd(cmdstr,infostr)
     local old=component.gpu.setForeground(0xFFFF00)
@@ -17,12 +18,23 @@ local function showerr(infostr)
     print(infostr)
     component.gpu.setForeground(old)
 end
+local function cwrite(color,infostr)
+    local old=component.gpu.setForeground(color)
+    io.write(infostr)
+    component.gpu.setForeground(old)
+end
 
 local args,ops=shell.parse(...)
 local argc=#args
 if(argc<1) then
     print("Usage:")
     showcmd("cnpm install <package>","Install package")
+    showcmd("cnpm list [-in] [<package>]",
+        "Search package" ..
+        "\tList all package if no package name given.\n" ..
+        "\t-i Only search in installed package\n" ..
+        "\t-n Only search in not installed package"
+    ) 
     showcmd("cnpm add [-gbmkno,--url=<url>] <repo>",
         "Add an external repository to cnpm\n" ..
         "\t-g Github repository (default)\n" ..
@@ -31,7 +43,7 @@ if(argc<1) then
         "\t-k CNPM official repository\n" ..
         "\t-n CodingNet repository\n" ..
         "\t-o Register as oppm repository\n" ..
-        "\t--url=<url> Direct repository link\n"
+        "\t--url=<url> Direct repository link"
     )
     showcmd("cnpm del <repo>","Delete an external repository")
     showcmd("cnpm update","Update software info")
@@ -192,20 +204,115 @@ if(args[1]=="add") then
 
     print("Adding package info...")
     local db=getdb()
-    if(db[pkg.name]==nil) then -- New package with this name
-        db[pkg.name]={}
-    end
 
     local spkg={}
     spkg.pkg=pkg
     spkg.site=string.gsub(realcfgurl,"/mainfest.txt","/")
-    spkg.cert=false -- Repo add through "cnpm add <repo>" are not certified.
+    spkg.cert=false -- Repo add through "cnpm add" are not certified.
+    spkg.guid=uuid.next()
 
-    -- Add repo
+    -- Checking package repeat before adding it
+    for k,t in pairs(db) do
+        if(t.site==spkg.site) then
+            showerr("Package already exist.")
+            return 1
+        end
+    end
+
     print("Updating package info...")
-    table.insert(db[pkg.name],spkg)
+    -- Notice that database is stored by <guid,spkg>
+    while(db[spkg.guid]~=nil) do
+        spkg.guid=uuid.next()
+    end
+    db[spkg.guid]=spkg
     
     savedb(db)
 
     print("Repository Added.")
+    return 0
+end
+
+local function format_table(t)
+    local maxlen={}
+    for k,v in ipairs(t.head) do 
+        table.insert(maxlen,string.len(v))
+    end
+    for i,line in ipairs(t.data) do
+        for k,v in ipairs(line) do 
+            if(maxlen[k]<string.len(v)) then
+                maxlen[k]=string.len(v)
+            end
+        end
+    end
+
+    io.write("|")
+    for k,v in ipairs(t.head) do
+        for i=1,maxlen[k]+2,1 do
+            io.write("=")
+        end
+        io.write("|")
+    end
+    io.write("\n")
+
+    io.write("| ")
+    for k,v in ipairs(t.head) do
+        io.write(v)
+        for i=1,maxlen[k]-string.len(v),1 do
+            io.write(" ")
+        end
+        io.write(" | ")
+    end
+    io.write("\n")
+
+    io.write("|")
+    for k,v in ipairs(t.head) do
+        for i=1,maxlen[k]+2,1 do
+            io.write("-")
+        end
+        io.write("|")
+    end
+    io.write("\n")
+
+    for i,line in ipairs(t.data) do
+        io.write("| ")
+        for k,v in ipairs(line) do
+            io.write(v)
+            for i=1,maxlen[k]-string.len(v),1 do
+                io.write(" ")
+            end
+            io.write(" | ")
+        end
+
+        io.write("\n")
+    end
+
+    io.write("|")
+    for k,v in ipairs(t.head) do
+        for i=1,maxlen[k]+2,1 do
+            io.write("=")
+        end
+        io.write("|")
+    end
+    io.write("\n")
+end
+
+if(args[1]=="list") then
+    local db=getdb()
+    local lst={}
+    lst.head={"Package Name","Author","Certified","Installed"}
+    lst.data={}
+
+    for k,t in pairs(db) do
+        local xt={t.pkg.name,t.pkg.author or "(public)"}
+        if(t.pkg.cert) then
+            table.insert(xt,"Yes")
+        else
+            table.insert(xt,"No")
+        end
+        table.insert(xt,"Unknown")
+        
+        table.insert(lst.data,xt)
+    end
+
+    format_table(lst)
 end
